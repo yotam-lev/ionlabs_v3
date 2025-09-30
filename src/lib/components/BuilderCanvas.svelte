@@ -1,50 +1,124 @@
-<script>
+<script lang="ts">
   import { writable } from "svelte/store";
   import { derived } from "svelte/store";
+  import ConductanceModal from "./ConductanceModal.svelte";
+
+
+  // Modal State
+  let showConductanceModal = false;
 
   // --- State Management ---
-  const states = writable([]);
-  const transitions = writable([]);
-  const selectedStateId = writable(null);
-  const selectedTransitionId = writable(null);
+  interface State {
+    id: number;
+    x: number;
+    y: number;
+    gateStatus: "open" | "closed";
+  }
 
-  let nextStateId = 1;
-  let nextTransitionId = 1;
+  interface Transition {
+    id: number;
+    from: number;
+    to: number;
+    rate_equation_id: string;
+  }
+
+  interface LinePair {
+    pairKey: string;
+    x1: number;
+    y1: number;
+    x2: number;
+    y2: number;
+    mx: number;
+    my: number;
+    topX: number;
+    topY: number;
+    bottomX: number;
+    bottomY: number;
+    forwardId: number | null;
+    backwardId: number | null;
+    forwardRate: string;
+    backwardRate: string;
+  }
+
+  const states = writable<State[]>([]);
+  const transitions = writable<Transition[]>([]); // [{ id, from, to, rate_equation_id }]
+  const selectedStateId = writable<number | null>(null);
+  const selectedTransitionId = writable<number | null>(null);
+
+  let nextStateId: number = 1;
+  let nextTransitionId: number = 1;
 
   // --- Interaction Modes ---
-  let isAddingTransition = false;
-  let transitionStartId = null;
-  let symmetricDeleteEnabled = true; // UI toggle; with undirected links it's effectively normal delete
+  let isAddingTransition: boolean = false;
+  let transitionStartId: number | null = null;
+  let symmetricDeleteEnabled: boolean = true; // UI toggle; with undirected links it's effectively normal delete
 
   // --- Dragging State ---
-  let draggedStateId = null;
-  let wasDragged = false;
-  let dragOffsetX = 0;
-  let dragOffsetY = 0;
+  let draggedStateId: number | null = null;
+  let wasDragged: boolean = false;
+  let dragOffsetX: number = 0;
+  let dragOffsetY: number = 0;
 
   // --- Derived Store for Rendering Lines ---
-  const transitionLines = derived(
-    [states, transitions],
-    ([$states, $transitions]) => {
-      const stateMap = new Map($states.map((s) => [s.id, s]));
-      return $transitions
-        .map((t) => {
-          const state1 = stateMap.get(t.states[0]);
-          const state2 = stateMap.get(t.states[1]);
-          if (!state1 || !state2) return null;
-
-          const stateSize = 60; // from CSS
-          return {
-            id: t.id,
-            x1: state1.x + stateSize / 2,
-            y1: state1.y + stateSize / 2,
-            x2: state2.x + stateSize / 2,
-            y2: state2.y + stateSize / 2,
-          };
-        })
-        .filter(Boolean);
+  const transitionLines = derived<
+    [typeof states, typeof transitions],
+    LinePair[]
+  >([states, transitions], ([$states, $transitions]) => {
+    const stateMap = new Map($states.map((s) => [s.id, s]));
+    const stateSize = 60; // from CSS
+    const pairMap: Map<
+      string,
+      { forward: Transition | null; backward: Transition | null }
+    > = new Map();
+    for (const t of $transitions) {
+      const key = `${Math.min(t.from, t.to)}-${Math.max(t.from, t.to)}`;
+      const rec = pairMap.get(key) ?? { forward: null, backward: null };
+      if (t.from <= t.to) rec.forward = t;
+      else rec.backward = t;
+      pairMap.set(key, rec);
     }
-  );
+    const pairs: LinePair[] = [];
+    for (const [pairKey, { forward, backward }] of pairMap.entries()) {
+      const a = forward ?? backward!;
+      const fromState = stateMap.get(Math.min(a.from, a.to));
+      const toState = stateMap.get(Math.max(a.from, a.to));
+      if (!fromState || !toState) continue;
+      const x1 = fromState.x + stateSize / 2;
+      const y1 = fromState.y + stateSize / 2;
+      const x2 = toState.x + stateSize / 2;
+      const y2 = toState.y + stateSize / 2;
+      const mx = (x1 + x2) / 2;
+      const my = (y1 + y2) / 2;
+      const dx = x2 - x1;
+      const dy = y2 - y1;
+      const len = Math.max(1, Math.hypot(dx, dy));
+      const nx = -dy / len;
+      const ny = dx / len;
+      const offset = 14;
+      const topX = mx + nx * offset;
+      const topY = my + ny * offset;
+      const bottomX = mx - nx * offset;
+      const bottomY = my - ny * offset;
+      pairs.push({
+        pairKey,
+        x1,
+        y1,
+        x2,
+        y2,
+        mx,
+        my,
+        topX,
+        topY,
+        bottomX,
+        bottomY,
+        forwardId: forward ? forward.id : null,
+        backwardId: backward ? backward.id : null,
+        forwardRate: forward?.rate_equation_id ?? "",
+        backwardRate: backward?.rate_equation_id ?? "",
+      });
+    }
+    return pairs;
+  });
 
   // --- Functions ---
   function addState() {
@@ -52,7 +126,7 @@
       id: nextStateId++,
       x: 100 + ((nextStateId - 1) % 10) * 20,
       y: 100 + ((nextStateId - 1) % 10) * 20,
-      gateStatus: "closed",
+      gateStatus: "closed" as const,
     };
     states.update((current) => [...current, newState]);
   }
@@ -79,7 +153,7 @@
    * Handles a click on a state. This can either select a state
    * or create a transition, depending on the current mode.
    */
-  function handleStateClick(clickedId) {
+  function handleStateClick(clickedId: number) {
     if (!isAddingTransition) {
       // Normal mode: select the state
       selectedStateId.set(clickedId);
@@ -94,21 +168,32 @@
     } else {
       // This is the second state clicked, create the transition
       if (transitionStartId !== clickedId) {
-        const newTransitionStates = [transitionStartId, clickedId].sort(
-          (a, b) => a - b
-        );
-        const exists = $transitions.some(
-          (t) =>
-            t.states[0] === newTransitionStates[0] &&
-            t.states[1] === newTransitionStates[1]
-        );
-
-        if (!exists) {
-          transitions.update((current) => [
-            ...current,
-            { id: nextTransitionId++, states: newTransitionStates },
-          ]);
-        }
+        const from = transitionStartId;
+        const to = clickedId;
+        transitions.update((current) => {
+          const existsForward = current.some(
+            (t) => t.from === from && t.to === to
+          );
+          const existsBackward = current.some(
+            (t) => t.from === to && t.to === from
+          );
+          const additions = [];
+          if (!existsForward)
+            additions.push({
+              id: nextTransitionId++,
+              from,
+              to,
+              rate_equation_id: "",
+            });
+          if (!existsBackward)
+            additions.push({
+              id: nextTransitionId++,
+              from: to,
+              to: from,
+              rate_equation_id: "",
+            });
+          return additions.length ? [...current, ...additions] : current;
+        });
       }
       // Reset and exit transition mode after the second click
       isAddingTransition = false;
@@ -116,7 +201,7 @@
     }
   }
 
-  function selectTransition(id) {
+  function selectTransition(id: number) {
     selectedTransitionId.set(id);
     selectedStateId.set(null);
   }
@@ -124,8 +209,22 @@
   function deleteSelectedTransition() {
     if (!$selectedTransitionId) return;
     const idToDelete = $selectedTransitionId;
-    transitions.update((current) => current.filter((t) => t.id !== idToDelete));
+    transitions.update((current) => {
+      const target = current.find((t) => t.id === idToDelete);
+      if (!target) return current;
+      const partner = current.find(
+        (t) => t.from === target.to && t.to === target.from
+      );
+      const partnerId = partner ? partner.id : null;
+      return current.filter((t) => t.id !== idToDelete && t.id !== partnerId);
+    });
     selectedTransitionId.set(null);
+  }
+
+  function updateTransitionRate(id: number, value: string) {
+    transitions.update((current) =>
+      current.map((t) => (t.id === id ? { ...t, rate_equation_id: value } : t))
+    );
   }
 
   function toggleSymmetricDelete() {
@@ -144,7 +243,7 @@
 
     // Remove any transitions that were connected to that state
     transitions.update((current) =>
-      current.filter((t) => !t.states.includes(idToDelete))
+      current.filter((t) => t.from !== idToDelete && t.to !== idToDelete)
     );
 
     // Clear the selection
@@ -152,11 +251,12 @@
   }
 
   // --- Drag and Drop Handlers ---
-  function handleMouseDown(event, id) {
+  function handleMouseDown(event: MouseEvent, id: number) {
     draggedStateId = id;
     wasDragged = false;
 
-    const stateElement = event.currentTarget;
+    const stateElement = event.currentTarget as HTMLElement | null;
+    if (!stateElement) return;
     const stateRect = stateElement.getBoundingClientRect();
     dragOffsetX = event.clientX - stateRect.left;
     dragOffsetY = event.clientY - stateRect.top;
@@ -165,7 +265,7 @@
     window.addEventListener("mouseup", handleMouseUp, { once: true });
   }
 
-  function handleMouseMove(event) {
+  function handleMouseMove(event: MouseEvent) {
     if (draggedStateId === null) return;
     wasDragged = true; // Flag that a drag has occurred
 
@@ -243,18 +343,109 @@
         ? "Symmetric Delete: On"
         : "Symmetric Delete: Off"}
     </button>
+
+    <button class= "action-button" aria-pressed={showConductanceModal}
+    on:click={() => (showConductanceModal = true)}
+    title="When on coductance modal is showing ">
+    Conductance
+    </button>
+
+
+
   </header>
   <main class="canvas" class:adding-transition={isAddingTransition}>
     <svg class="transition-svg">
-      {#each $transitionLines as line (line.id)}
-        <line
-          x1={line.x1}
-          y1={line.y1}
-          x2={line.x2}
-          y2={line.y2}
-          class:selected={$selectedTransitionId === line.id}
-          on:click={() => selectTransition(line.id)}
-        />
+      <defs>
+        <marker
+          id="arrowhead"
+          markerWidth="10"
+          markerHeight="7"
+          refX="8"
+          refY="3.5"
+          orient="auto"
+        >
+          <polygon points="0 0, 10 3.5, 0 7" fill="#9ca3af" />
+        </marker>
+      </defs>
+      {#each $transitionLines as line (line.pairKey)}
+        <g>
+          <line
+            x1={line.x1}
+            y1={line.y1}
+            x2={line.x2}
+            y2={line.y2}
+            marker-start="url(#arrowhead)"
+            marker-end="url(#arrowhead)"
+            class:selected={$selectedTransitionId === line.forwardId ||
+              $selectedTransitionId === line.backwardId}
+            role="button"
+            tabindex="0"
+            on:click={() =>
+              line.forwardId !== null
+                ? selectTransition(line.forwardId)
+                : line.backwardId !== null && selectTransition(line.backwardId)}
+            on:keydown={(e) =>
+              e.key === "Enter" &&
+              (line.forwardId !== null
+                ? selectTransition(line.forwardId)
+                : line.backwardId !== null &&
+                  selectTransition(line.backwardId))}
+          />
+          {#if line.forwardId !== null}
+            <foreignObject
+              x={line.topX - 30}
+              y={line.topY - 14}
+              width="60"
+              height="28"
+              style="overflow:visible;"
+            >
+              <div
+                xmlns="http://www.w3.org/1999/xhtml"
+                style="display:flex; align-items:center; justify-content:center;"
+              >
+                <input
+                  type="text"
+                  placeholder="***"
+                  value={line.forwardRate}
+                  on:click={(e) => e.stopPropagation()}
+                  on:input={(e) =>
+                    updateTransitionRate(
+                      line.forwardId!,
+                      (e.currentTarget as HTMLInputElement).value
+                    )}
+                  style="width: 56px; height: 22px; font-size: 12px; text-align: center; border: 1px solid #d1d5db; border-radius: 4px; background: #ffffffcc;"
+                />
+              </div>
+            </foreignObject>
+          {/if}
+          {#if line.backwardId !== null}
+            <foreignObject
+              x={line.bottomX - 30}
+              y={line.bottomY - 14}
+              width="60"
+              height="28"
+              style="overflow:visible;"
+            >
+              <div
+                xmlns="http://www.w3.org/1999/xhtml"
+                style="display:flex; align-items:center; justify-content:center;"
+              >
+                <input
+                  type="text"
+                  placeholder="***"
+                  value={line.backwardRate}
+                  on:click={(e) => e.stopPropagation()}
+                  on:input={(e) =>
+                    updateTransitionRate(
+                      line.backwardId!,
+                      (e.currentTarget as HTMLInputElement).value
+                    )}
+                  style="width: 56px; height: 22px; font-size: 12px; text-align: center; border: 1px solid #d1d5db; border-radius: 4px; background: #ffffffcc;"
+                />
+              </div>
+            </foreignObject>
+          {/if}
+        </g>
       {/each}
     </svg>
 
@@ -267,6 +458,8 @@
         class:transition-start={transitionStartId === state.id}
         class:dragging={draggedStateId === state.id}
         style="left: {state.x}px; top: {state.y}px;"
+        role="button"
+        tabindex="0"
         on:mousedown={(e) => handleMouseDown(e, state.id)}
       >
         {state.id}
@@ -278,6 +471,11 @@
     {/if}
   </main>
 </div>
+
+<ConductanceModal 
+    showModal = {showConductanceModal}
+    on:close={() => (showConductanceModal = false)}
+/>
 
 <style>
   :global(body, html) {

@@ -23,6 +23,17 @@
       "csp": null
     }
   },
+
+
+  
+  "build": {
+    "beforeDevCommand": "pnpm dev",
+    "beforeBuildCommand": "pnpm build",
+    "devUrl": "http://localhost:5173",
+    "frontendDist": "../build"
+  
+  },
+  
   "bundle": {
     "active": true,
     "targets": "all",

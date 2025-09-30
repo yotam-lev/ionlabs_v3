@@ -4,6 +4,7 @@
     import Navbar from '$lib/components/Navbar.svelte'; 
     import HomePage from './+page.svelte';
     import KineticModePage from './kinetic-model/+page.svelte';
+	export const ssr = false;
   </script>
   
   <!-- 
