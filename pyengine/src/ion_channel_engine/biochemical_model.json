@@ -1,0 +1,21 @@
+{
+    "model_id": "GlycolysisStep1",
+    "description": "Phosphorylation of Glucose by Hexokinase.",
+    "parameters": {
+      "cell_volume_L": 1e-15
+    },
+    "species": [
+      {"id": "glucose", "name": "Glucose", "initial_concentration": 0.5},
+      {"id": "atp", "name": "ATP", "initial_concentration": 1.0},
+      {"id": "adp", "name": "ADP", "initial_concentration": 0.1},
+      {"id": "g6p", "name": "Glucose-6-Phosphate", "initial_concentration": 0.0}
+    ],
+    "reactions": [
+      {
+        "id": "hexokinase_reaction",
+        "reactants": {"glucose": 1, "atp": 1},
+        "products": {"g6p": 1, "adp": 1},
+        "rate_constant": 1.2
+      }
+    ]
+  }

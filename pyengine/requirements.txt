@@ -1,0 +1,7 @@
+numpy
+scipy
+numba
+plotly
+pydantic
+sympy
+matplotlib
