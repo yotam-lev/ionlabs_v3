@@ -16,6 +16,10 @@ use std::io::Write;
 
 #[tauri::command]
 async fn save_kinetic_model(model: KineticModel, window: tauri::Window) -> Result<(), String> {
+
+  //Run Validation Method immediately after receivnig the model
+
+    model.validate_completeness()?;
     // Serialize the model to a JSON string first.
     let json_string = serde_json::to_string_pretty(&model)
       .map_err(|e| format!("Failed to serialize model: {}", e))?;

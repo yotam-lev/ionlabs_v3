@@ -6,7 +6,7 @@ import numpy as np
 # Add the script's own directory to the Python path
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
-from schemas import ChannelModelSchema, StimulusProtocolSchema
+from schemas import ChannelModel, StimulusProtocolSchema
 from simulation import SimulationEngine
 
 # Helper class to convert numpy arrays in the result to lists

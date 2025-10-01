@@ -11,33 +11,43 @@ from pydantic import BaseModel, Field
 from scipy.integrate import solve_ivp
 
 
-from schemas import ChannelModelSchema, StimulusProtocolSchema
+from schemas import ChannelModel, StimulusProtocol, HoldingValue, FluxStep
 
 # --- Stimulus Class (Corrected) ---
 
 class Stimulus:
     """A helper class to get the value of any stimulus variable at a given time."""
-    def __init__(self, protocol: StimulusProtocolSchema):
+    def __init__(self, protocol: StimulusProtocol):
         self.protocol = protocol
+        self.holding_map: Dict[str, HoldingValue] = {
+            hv.name: hv for hv in self.protocol.holding_values
+        }
 
-    def get_value_at_time(self, variable_name: str, t_ms: float) -> float:
+
+    def get_value_at_time(self, variable_name: str, t_ms: float) -> Optional[float]:
         """
         Finds the value of a variable at a specific time t_ms by checking epochs.
         If no epoch is active, returns the holding value.
         """
         # Default to the holding value
-        value = getattr(self.protocol.holding_values, variable_name)
+        holding_value = self.holding_mape.get(variable_name)
+        if not holding_value:
+            return None
 
-        # Check if any epoch overrides the holding value at this time
-        for epoch in self.protocol.epochs:
-            if epoch.variable == variable_name:
-                start = epoch.start_time_ms
-                end = start + epoch.duration_ms
-                if start <= t_ms < end:
-                    return epoch.value
-        
-        return value
+        value = holding_value.value
 
+        for flux in holding_value.fluxSteps:
+            start = flux.time
+            end = start + flux.deltaTime
+            if start <= t_ms < end:
+                if flux.type == 'Step'"
+                return flux.value
+
+            elif flux.type == 'Ramp':
+                progress = (t_ms - start) / flux.deltaTime
+                return value + progress * (flux.value - value)
+
+            return value
 
 # --- Simulation Engine (Corrected) ---
 
@@ -49,6 +59,7 @@ class SimulationEngine:
         self.model = model
         self.protocol = protocol
         self.stimulus = Stimulus(protocol)
+        self.holding_map = self.stimulus.holding_map
 
         # Store state information
         self.state_map = {state.id: i for i, state in enumerate(model.states)}
@@ -62,8 +73,8 @@ class SimulationEngine:
         self.z = 1      # Valence of K+
 
         #volume of cells currently using place holders, will need to change this to a user changable variable at some point
-        self.volume_internal_L = getattr(self.protocol.holding_values, 'volume_internal_L', 1e-12)
-        self.volume_external_L = getattr(self.protocol.holding_values, 'volume_external_L', 1e-6)
+        self.volume_internal_L = self.holding_map.get('volume_internal_L', HoldingValue(name='volume_internal_L'))
+        self.volume_external_L = self.holding_map.get('volume_external_L', HoldingValue(name='volume_external_L'))
         
         self._prepare_rate_equations()
 
@@ -88,13 +99,12 @@ class SimulationEngine:
         The system of ODEs for the channel state probabilities, using a Q-matrix.
         """
         t_ms = t_s * 1000.0
-        V = self.stimulus.get_value_at_time('voltage_mV', t_ms)
-
+        V = self.stimulus.get_value_at_time('Voltage', t_ms)
+        if V is None: V = 0
 
         probabilities = y[:self.num_states]
         internal_K_mM = y[self.num_states]
         external_K_mM = y[self.num_states + 1]
-
 
         # Initialize the transition matrix Q
         Q = np.zeros((self.num_states, self.num_states))
@@ -109,20 +119,17 @@ class SimulationEngine:
 
         if internal_K_mM <= 0 or external_K_mM <= 0:
             nernst_potential = 0
-            total_current_pA = 0
         else:
             nernst_potential = ((self.R * self.T) / (self.z * self.F) * np.log(external_K_mM / internal_K_mM)) * 1000
         
         total_conductance = self.conductances @ probabilities
         total_current_pA = total_conductance * (V - nernst_potential)
 
-        current_A = total_current_pA * 1e-12
-        flux_mol_s = current_A/(self.z * self.F)
-        flux_mmol_s = flux_mol_s * 1000
 
-        #Calculate concentration change rate 
-        d_internal_K_dt = -flux_mmol_s/self.volume_internal_L
-        d_external_K_dt = flux_mmol_s/self.volume_external_L
+        flux_mmol_s = (total_current_pA * 1e-12) / (self.z * self.F) * 1000
+        d_internal_K_dt = -flux_mmol_s / self.volume_internal_L
+        d_external_K_dt = flux_mmol_s / self.volume_external_L
+
 
         dydt = np.concatenate((d_probabilities_dt, [d_internal_K_dt], [d_external_K_dt]))
         return dydt
@@ -138,10 +145,11 @@ class SimulationEngine:
         y0_probs[0] = 1.0
         
         # --- FIX ---: Correctly access the nested holding_values attributes
-        y0_int_k = self.protocol.holding_values.internal_K_mM
-        y0_ext_k = self.protocol.holding_values.external_K_mM
+        y0_int_k = self.holding_map.get('Internal-K', HoldingValue(name='Internal-K', value=140, delta=0, units='mM', type='concentration', fluxSteps=[])).value
+        y0_ext_k = self.holding_map.get('External-K', HoldingValue(name='External-K', value=4, delta=0, units='mM', type='concentration', fluxSteps=[])).value
         
         y0 = np.concatenate((y0_probs, [y0_int_k], [y0_ext_k]))
+
 
         t_span_s = [0, duration_ms / 1000.0]
         t_eval_s = np.linspace(t_span_s[0], t_span_s[1], steps)

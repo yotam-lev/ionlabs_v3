@@ -7,8 +7,16 @@ only receives data with the correct structure, types, and constraints.
 import json
 from typing import List, Literal, Optional
 from pydantic import BaseModel, Field, ValidationError, field_validator
+from collections import defaultdict
 
 # --- Channel Model Schemas ---
+
+class KineticModel(BaseModel):
+    model_name: str
+    states: list
+    transitions: list
+    rate_equations: list
+    stimulus protocol
 
 class State(BaseModel):
     """Defines a single conformational state of the ion channel."""
@@ -31,7 +39,7 @@ class Transition(BaseModel):
     rate_function_id: str = Field(..., description="The id' of the rate function to use for this transition")
     multiplier: float = Field(default=1.0, gt=0, description=" An optional multiplier for the rate function")
 
-class ChannelModelSchema(BaseModel):
+class ChannelModel(BaseModel):
     """
     Validates the entire structure for an ion channel model, including its states
     and the transitions between them.
@@ -68,54 +76,68 @@ class ChannelModelSchema(BaseModel):
             raise ValueError(". ".join(errors))
 
         return transitions 
+    
+    @field_validator(mode='after')
+    def check_model_completeness(self) -> 'ChannelModel':
+        if not self.states:
+            return self
+        
+        state_ids = { s.id for s in self.states }
+        transition_counts = defaultdict(lambda: {'incoming': 0, 'outgoing': 0})
+
+        for t in self.transitions:
+            if t.source_state_id not in state_ids:
+                raise ValueError(f"Transition '{t.id}' references a non-existent source state '{t.source_state_id}'")
+            if t.target_state_id not in state_ids:
+                raise ValueError(f"Transition '{t.d}' references a non existant target state '{t.target_state_id}'")
+            
+            transition_counts[t.source_stae_id]['outgoing'] += 1
+            transition_counts[t.target_state_id]['incoming'] += 1
+        
+        for state in self.states: 
+            counts = transition_counts[state.id]
+            if counts['incoming'] < 1:
+                raise ValueError(f" state '{state.name}' ({state.id}) is incomplete: it must have at least 1 incoming transition")
+                        if counts['outgoing'] < 1:
+                raise ValueError(f" state '{state.name}' ({state.id}) is incomplete: it must have at least 1 outgoing transition")
+            
+        return self
+    
 
 
 # --- Stimulus Protocol Schemas ---
 
+
+class FluxStep(BaseModel):
+
+    type: Literal['Step', 'Ramp']
+    value: float
+    delta: float
+    time: float
+    deltaTime: float
+
 class HoldingValues(BaseModel):
     """Defines the baseline, steady-state conditions of the simulation."""
-    voltage_mV: float
-    internal_K_mM: float
-    external_K_mM: float
-    volume_internal_L: Optional[float] = Field(
-        None, gt=0, description="Optional: The internal (cell) volume in Liters."
-    )
-    volume_external_L: Optional[float] = Field(
-        None, gt=0, description="Optional: The external (bath) volume in Liters."
-    )
-
-class ProtocolEpoch(BaseModel):
-    """Defines a specific change to a variable for a set duration."""
-    variable: str
-    start_time_ms: float = Field(..., ge=0)
-    duration_ms: float = Field(..., gt=0)
+    name: str
     value: float
+    deelta: float
+    units: str
+    type: Literal['voltage', 'concentration']
 
 class StimulusProtocolSchema(BaseModel):
-    """The complete schema for defining an experimental stimulus protocol."""
     protocol_id: str
-    holding_values: HoldingValues
-    epochs: List[ProtocolEpoch]
+    holding_values: List[HoldingValue]
+    sweep_duration_ms: int = 1000
+    sweeps: int = 1
+    
+    @field_validator('holding_values')
+    def check_for_duplicate_names(cls, values):
+        names = set()
+        for hv in values:
+            if hv.name in names:
+                raise ValueError(f"Duplicate holding value name found: '{hv.name}'. Names must be unique")
+            names.add{hv.name}
+        return values
 
-    @field_validator('epochs')
-    def check_epoch_variables_are_valid(cls, epochs, info):
-        """
-        A custom validator to ensure that the 'variable' in each epoch
-        corresponds to a valid parameter in the HoldingValues model.
-        """
-        values = info.data
-        if 'holding_values' not in values:
-            return epochs # Initial validation pass
-            
-        # The 'holding_values' object is a Pydantic model, so we call .dict() to get its fields
-        valid_vars = set(values['holding_values'].dict().keys())
-        errors = []
-        for i, epoch in enumerate(epochs):
-            if epoch.variable not in valid_vars:
-                errors.append(f"Epoch {i}: '{epoch.variable}' is not a valid variable. Must be one of {valid_vars}.")
-        
-        if errors:
-            raise ValueError(". ".join(errors))
 
-        return epochs
 
